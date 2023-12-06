@@ -3,9 +3,9 @@ import googlemaps
 import requests
 
 # Constants
-MAX_RANGE = 405 # km
-THRESHOLD = 0 # km
-DIST_FROM_STATION = 15 # km
+MAX_RANGE = 405  # km
+THRESHOLD = 0  # km
+DIST_FROM_STATION = 15  # km
 NEW_RANGE = MAX_RANGE
 W = 3
 START = "baldwinsville, ny"
@@ -18,10 +18,11 @@ api_key = google_api_file.read()
 google_api_file.close()
 gmaps = googlemaps.Client(key=api_key)
 
-# Initialize NREL API key  
+# Initialize NREL API key
 nrel_api_file = open("nrel_api_key.txt", "r")
 nrel_api_key = nrel_api_file.read()
 nrel_api_file.close()
+
 
 class Node:
     def __init__(self, state, path, cost):
@@ -32,6 +33,7 @@ class Node:
     def __lt__(self, other):
         return self.cost < other.cost
 
+
 # Return list of waypoints between two locations
 def get_adjacent_waypoints(current_location, destination):
     # Request directions
@@ -39,9 +41,12 @@ def get_adjacent_waypoints(current_location, destination):
 
     # Extract waypoints
     steps = directions_result[0]["legs"][0]["steps"]
-    waypoints = [(step["end_location"]["lat"], step["end_location"]["lng"]) for step in steps]
+    waypoints = [
+        (step["end_location"]["lat"], step["end_location"]["lng"]) for step in steps
+    ]
 
     return waypoints
+
 
 # Return distance in km between two locations
 def get_distance(start, end):
@@ -52,6 +57,7 @@ def get_distance(start, end):
     distance = directions_result[0]["legs"][0]["distance"]["value"] / 1000
 
     return distance
+
 
 # Return list of charging stations within a given range of a route
 def get_stations_nearby_route(start, end):
@@ -66,12 +72,16 @@ def get_stations_nearby_route(start, end):
     lat_lng = googlemaps.convert.decode_polyline(polyline)
 
     # Format as WKT LINESTRING
-    linestring = "LINESTRING(" + ", ".join([f"{point['lng']} {point['lat']}" for point in lat_lng]) + ")"
+    linestring = (
+        "LINESTRING("
+        + ", ".join([f"{point['lng']} {point['lat']}" for point in lat_lng])
+        + ")"
+    )
 
     params = {
         "api_key": nrel_api_key,
         "route": linestring,
-        "radius": DIST_FROM_STATION * 0.621371, # Convert to mi
+        "radius": DIST_FROM_STATION * 0.621371,  # Convert to mi
         "fuel_type": "ELEC",
         "ev_charging_level": "dc_fast",
         "status": "E",
@@ -83,21 +93,25 @@ def get_stations_nearby_route(start, end):
     data = response.json()
 
     # Check if 'fuel_stations' key exists in the response
-    if 'fuel_stations' in data and data["fuel_stations"]:
-        stations = [(station['latitude'], station['longitude'], station['distance']) for station in data["fuel_stations"]]
+    if "fuel_stations" in data and data["fuel_stations"]:
+        stations = [
+            (station["latitude"], station["longitude"], station["distance"])
+            for station in data["fuel_stations"]
+        ]
         return stations
     else:
         # Handle cases where 'fuel_stations' is not in the response
         return []
 
-# Return the nearest station within a distance of a given location 
+
+# Return the nearest station within a distance of a given location
 def get_nearest_station(location):
     url = "https://developer.nrel.gov/api/alt-fuel-stations/v1/nearest.json"
 
     params = {
         "api_key": nrel_api_key,
         "location": location,
-        "radius": DIST_FROM_STATION * 0.621371, # Convert to mi
+        "radius": DIST_FROM_STATION * 0.621371,  # Convert to mi
         "fuel_type": "ELEC",
         "ev_charging_level": "dc_fast",
         "limit": 1,
@@ -110,13 +124,17 @@ def get_nearest_station(location):
     data = response.json()
 
     # Check if 'fuel_stations' key exists in the response
-    if 'fuel_stations' in data and data["fuel_stations"]:
-        stations = [(station['latitude'], station['longitude'], station['distance']) for station in data["fuel_stations"]]
+    if "fuel_stations" in data and data["fuel_stations"]:
+        stations = [
+            (station["latitude"], station["longitude"], station["distance"])
+            for station in data["fuel_stations"]
+        ]
         return stations
     else:
         # Handle cases where 'fuel_stations' is not in the response
         return []
-    
+
+
 # Return a list of successors in the form (action, state, step_cost)
 def successor(state):
     current_location, current_range = state
@@ -134,8 +152,8 @@ def successor(state):
             next_state = (waypoint, new_range)
             step_cost = distance_to_waypoint
             successors.append(("Drive", next_state, step_cost))
-        
-    if stations: 
+
+    if stations:
         for station in stations:
             distance_to_station = get_distance(current_location, station)
 
@@ -147,25 +165,32 @@ def successor(state):
 
     return successors
 
+
 def goal_test(state):
     current_location, current_range = state
     return current_location == DESTINATION and current_range >= THRESHOLD
 
+
 STATIONS = get_stations_nearby_route(START, DESTINATION)
+
+
 def heuristic(state):
     current_location, current_range = state
 
     distance_to_destination = get_distance(current_location, DESTINATION)
     if current_range >= distance_to_destination:
         return distance_to_destination
-    
-    # # Find nearest charging station 
+
+    # # Find nearest charging station
     # nearest_station = get_nearest_station(current_location)[0]
 
     # return nearest_station[2]
-    nearest_station = min(STATIONS, key=lambda station: get_distance(current_location, station))
+    nearest_station = min(
+        STATIONS, key=lambda station: get_distance(current_location, station)
+    )
     distance_to_station = get_distance(current_location, nearest_station)
     return distance_to_station
+
 
 def a_star(initial_state, successor, goal_test, heuristic):
     initial_node = Node(initial_state, [], 0)
@@ -184,10 +209,14 @@ def a_star(initial_state, successor, goal_test, heuristic):
         for action, next_state, step_cost in successor(curr_node.state):
             next_cost = curr_node.cost + step_cost
             next_node = Node(next_state, curr_node.path + [action], next_cost)
-            print(f"Adding successor: {next_state} with action: {action} and step cost: {step_cost}")
+            print(
+                f"Adding successor: {next_state} with action: {action} and step cost: {step_cost}"
+            )
             next_priority = next_cost + heuristic(next_state) * W
 
-            if next_state not in explored and all(next_state != node.state for node, _ in frontier):
+            if next_state not in explored and all(
+                next_state != node.state for node, _ in frontier
+            ):
                 heapq.heappush(frontier, (next_node, next_priority))
             else:
                 for i, (node, priority) in enumerate(frontier):
@@ -196,10 +225,13 @@ def a_star(initial_state, successor, goal_test, heuristic):
                         heapq.heapify(frontier)
                         break
 
-path = a_star(initial_state, 
-              lambda state: successor(state), 
-              lambda state: goal_test(state), 
-              lambda state: heuristic(state))
+
+path = a_star(
+    initial_state,
+    lambda state: successor(state),
+    lambda state: goal_test(state),
+    lambda state: heuristic(state),
+)
 
 print(path)
 
