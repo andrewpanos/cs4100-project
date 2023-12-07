@@ -1,15 +1,16 @@
 import heapq
 import googlemaps
 import requests
+import math
 
 # Constants
-MAX_RANGE = 405  # km
-THRESHOLD = 0  # km
-DIST_FROM_STATION = 15  # km
+MAX_RANGE = 405  # mi
+THRESHOLD = 0  # mi
+DIST_FROM_STATION = 10  # mi
 NEW_RANGE = MAX_RANGE
 W = 3
 START = "baldwinsville, ny"
-DESTINATION = "syracuse, ny"
+DESTINATION = "boston, ma"
 initial_state = (START, MAX_RANGE)
 
 # Initialize Google Maps API client
@@ -48,13 +49,13 @@ def get_adjacent_waypoints(current_location, destination):
     return waypoints
 
 
-# Return distance in km between two locations
+# Return distance in miles between two locations
 def get_distance(start, end):
     # Request directions
     directions_result = gmaps.directions(start, end, mode="driving")
 
-    # Extract distance in km
-    distance = directions_result[0]["legs"][0]["distance"]["value"] / 1000
+    # Extract distance in miles
+    distance = directions_result[0]["legs"][0]["distance"]["value"] / 1609
 
     return distance
 
@@ -126,7 +127,12 @@ def get_nearest_station(location):
     # Check if 'fuel_stations' key exists in the response
     if "fuel_stations" in data and data["fuel_stations"]:
         stations = [
-            (station["latitude"], station["longitude"], station["distance"])
+            (
+                station["latitude"],
+                station["longitude"],
+                station["distance"],
+                station["intersection_directions"],
+            )
             for station in data["fuel_stations"]
         ]
         return stations
@@ -171,25 +177,58 @@ def goal_test(state):
     return current_location == DESTINATION and current_range >= THRESHOLD
 
 
-STATIONS = get_stations_nearby_route(START, DESTINATION)
+# STATIONS = get_stations_nearby_route(START, DESTINATION)
 
 
 def heuristic(state):
     current_location, current_range = state
 
     distance_to_destination = get_distance(current_location, DESTINATION)
+
+    # Modify for threshold (SOC) at end of journey
     if current_range >= distance_to_destination:
         return distance_to_destination
 
-    # # Find nearest charging station
-    # nearest_station = get_nearest_station(current_location)[0]
+    # Find nearest charging station
+    nearest_station = get_nearest_station(current_location)[0]
 
     # return nearest_station[2]
-    nearest_station = min(
-        STATIONS, key=lambda station: get_distance(current_location, station)
+    # nearest_station = min(
+    #     STATIONS, key=lambda station: get_distance(current_location, station)
+    # )
+    # distance_to_station = get_distance(current_location, nearest_station)
+    distance_to_nearest_station = nearest_station[2]
+
+    return (
+        distance_to_destination
+        + math.exp(MAX_RANGE / current_range) * distance_to_nearest_station
     )
-    distance_to_station = get_distance(current_location, nearest_station)
-    return distance_to_station
+
+
+# TODO: Convert this to edge cost
+def reward(state):
+    current_location, current_range = state
+
+    distance_to_destination = get_distance(current_location, DESTINATION)
+
+    # Modify for threshold (SOC) at end of journey
+    if current_range >= distance_to_destination:
+        return distance_to_destination
+
+    # Find nearest charging station
+    nearest_station = get_nearest_station(current_location)[0]
+
+    # return nearest_station[2]
+    # nearest_station = min(
+    #     STATIONS, key=lambda station: get_distance(current_location, station)
+    # )
+    # distance_to_station = get_distance(current_location, nearest_station)
+    distance_to_nearest_station = nearest_station[2]
+
+    return (
+        distance_to_destination
+        + math.exp(MAX_RANGE / current_range) * distance_to_nearest_station
+    )
 
 
 def a_star(initial_state, successor, goal_test, heuristic):
@@ -226,14 +265,22 @@ def a_star(initial_state, successor, goal_test, heuristic):
                         break
 
 
-path = a_star(
-    initial_state,
-    lambda state: successor(state),
-    lambda state: goal_test(state),
-    lambda state: heuristic(state),
-)
+# path = a_star(
+#     initial_state,
+#     lambda state: successor(state),
+#     lambda state: goal_test(state),
+#     lambda state: heuristic(state),
+# )
 
-print(path)
+# print(path)
+
+if __name__ == "__main__":
+    loc, rng = initial_state
+    # print(loc)
+    # print(rng)
+    # print(get_distance(loc, DESTINATION))
+    # print(heuristic(initial_state))
+    print(heuristic(("albany, ny", 200)))
 
 # # Logic for optimal path
 # def successor1(state):
