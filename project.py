@@ -28,14 +28,14 @@ THRESHOLD = 20  # mi
 DIST_FROM_STATION = 10  # mi
 GOAL_RADIUS = 0.2  # mi
 
-start_str = "detroit, mi"
+start_str = "dallas, texas"
 start_geocode_result = gmaps.geocode(start_str)[0]["geometry"]["location"]
 START = (
     start_geocode_result["lat"],
     start_geocode_result["lng"],
 )
 
-dest_str = "buffalo, ny"
+dest_str = "houston, texas"
 dest_geocode_result = gmaps.geocode(dest_str)[0]["geometry"]["location"]
 DESTINATION = (
     dest_geocode_result["lat"],
@@ -88,7 +88,7 @@ def get_waypoints_along_route(current_location, destination):
 
 # Return list of charging stations within a given range of a route
 def get_stations_along_route(start, end):
-    url = "https://developer.nrel.gov/api/alt-fuel-stations/v1/nearby-route.json"
+    url = f"https://developer.nrel.gov/api/alt-fuel-stations/v1/nearby-route.json"
 
     directions_result = gmaps.directions(start, end, mode="driving")
 
@@ -105,8 +105,7 @@ def get_stations_along_route(start, end):
         + ")"
     )
 
-    params = {
-        "api_key": nrel_api_key,
+    data = {
         "route": linestring,
         "distance": DIST_FROM_STATION,
         "fuel_type": "ELEC",
@@ -115,10 +114,16 @@ def get_stations_along_route(start, end):
         "access": "public",
     }
 
-    # Make API request
-    response = requests.get(url, params=params)
+    headers = {"X-Api-Key": nrel_api_key}
 
-    data = response.json()
+    # Make API request
+    response = requests.post(url, data=data, headers=headers)
+
+    if response.status_code == 200:
+        data = response.json()
+    else:
+        print(f"Error: {response.status_code} - {response.text}")
+        return
 
     # Check if 'fuel_stations' key exists in the response
     if "fuel_stations" in data and data["fuel_stations"]:
@@ -368,43 +373,47 @@ def a_star(initial_state, successor, goal_test, heuristic):
                         break
 
 
-# path = a_star(
-#     initial_state,
-#     lambda state: successor(state),
-#     lambda state: goal_test(state),
-#     lambda state: heuristic(state),
-# )
-
-# print(path)
-
-
 def plot_path(path: list):
     route_start = path[0][2]
     route_map = folium.Map(location=route_start, zoom_start=10)
 
-    for action in path:
+    folium.Marker(
+        location=START,
+        popup="Start",
+        tooltip="Start",
+        icon=folium.Icon(color="blue"),
+    ).add_to(route_map)
+
+    folium.Marker(
+        location=DESTINATION,
+        popup="Destination",
+        tooltip="Destination",
+        icon=folium.Icon(color="green"),
+    ).add_to(route_map)
+
+    for i, action in enumerate(path):
         if action[0] == "Waypoint":
             folium.Marker(
                 location=action[2],
                 popup="Waypoint",
-                tooltip="Waypoint",
+                tooltip=f"Step {i + 1}",
                 icon=folium.Icon(color="black"),
             ).add_to(route_map)
         elif action[0] == "Station":
             folium.Marker(
                 location=action[2],
                 popup="Station",
-                tooltip="Station",
+                tooltip=f"Step {i + 1}",
                 icon=folium.Icon(color="red"),
             ).add_to(route_map)
 
-    route_map.save(f"{start_str}-{dest_str}.html")
+    route_map.save(f"{start_str}_{dest_str}.html")
 
 
 if __name__ == "__main__":
-    path = a_star(initial_state, successor, goal_test, heuristic)
+    final_path = a_star(initial_state, successor, goal_test, heuristic)
 
-    plot_path(path)
+    plot_path(final_path)
 
 
 # # Logic for optimal path
