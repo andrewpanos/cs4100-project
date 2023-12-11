@@ -3,27 +3,40 @@ import googlemaps
 import requests
 import math
 from pprint import pprint
-
-# Constants
-MAX_RANGE = 400  # mi
-THRESHOLD = 50  # mi
-DIST_FROM_STATION = 10  # mi
-NEW_RANGE = MAX_RANGE
-W = 3
-START = "baldwinsville, ny"
-DESTINATION = "boston, ma"
-initial_state = (START, MAX_RANGE)
+from geopy.distance import geodesic
 
 # Initialize Google Maps API client
 google_api_file = open("google_api_key.txt", "r")
-api_key = google_api_file.read()
+google_api_key = google_api_file.read()
 google_api_file.close()
-gmaps = googlemaps.Client(key=api_key)
+
+gmaps = googlemaps.Client(key=google_api_key)
 
 # Initialize NREL API key
 nrel_api_file = open("nrel_api_key.txt", "r")
 nrel_api_key = nrel_api_file.read()
 nrel_api_file.close()
+
+# Constants
+MAX_RANGE = 400  # mi
+THRESHOLD = 20  # mi
+DIST_FROM_STATION = 10  # mi
+
+start_str = "baldwinsville, ny"
+start_geocode_result = gmaps.geocode(start_str)
+START = (
+    start_geocode_result[0]["geometry"]["location"]["lat"],
+    start_geocode_result[0]["geometry"]["location"]["lng"],
+)
+
+dest_str = "boston, ma"
+dest_geocode_result = gmaps.geocode(dest_str)
+DESTINATION = (
+    dest_geocode_result[0]["geometry"]["location"]["lat"],
+    dest_geocode_result[0]["geometry"]["location"]["lng"],
+)
+
+initial_state = (START, MAX_RANGE)
 
 
 class Node:
@@ -48,30 +61,11 @@ def get_waypoints_along_route(current_location, destination):
         (
             step["end_location"]["lat"],
             step["end_location"]["lng"],
-            step["distance"]["value"] / 1609,  # convert to mi
         )
         for step in steps
     ]
 
     return waypoints
-
-
-def get_next_waypoint(current_location, destination):
-    waypoints = get_waypoints_along_route(current_location, destination)
-
-    if waypoints:
-        return waypoints[0]
-
-
-# Return distance in miles between two locations
-def get_distance(start, end):
-    # Request directions
-    directions_result = gmaps.directions(start, end, mode="driving")
-
-    # Extract distance in miles
-    distance = directions_result[0]["legs"][0]["distance"]["value"] / 1609
-
-    return distance
 
 
 # Return list of charging stations within a given range of a route
@@ -113,14 +107,17 @@ def get_stations_along_route(start, end):
             (
                 station["latitude"],
                 station["longitude"],
-                station["distance"],
             )
             for station in data["fuel_stations"]
         ]
         return stations
     else:
         # Handle cases where 'fuel_stations' is not in the response
-        return []
+        raise Exception("No fuel stations found along route.")
+
+
+WAYPOINTS = get_waypoints_along_route(START, DESTINATION)
+STATIONS = get_stations_along_route(START, DESTINATION)
 
 
 # Return the nearest station within a distance of a given location
@@ -148,7 +145,6 @@ def get_nearest_station(location):
             (
                 station["latitude"],
                 station["longitude"],
-                station["distance"],
             )
             for station in data["fuel_stations"]
         ]
@@ -158,31 +154,10 @@ def get_nearest_station(location):
         return []
 
 
-# TODO: Convert this to edge cost
-def step_cost(state, action):
-    current_location, current_range = state
-    action_str, distance = action
-
-    if action_str == "Continue":
-        return distance + 1 / (0.5 + math.exp((current_range - THRESHOLD) / THRESHOLD))
-    elif action_str == "Divert":
-        return distance + 1 / (0.5 + math.exp(-(current_range - THRESHOLD) / THRESHOLD))
-
-    # distance_to_destination = get_distance(current_location, DESTINATION)
-
-    # Modify for threshold (SOC) at end of journey
-    # if current_range >= distance_to_destination:
-    #     return distance_to_destination
-
-    # Find nearest charging station
-    # nearest_station = get_nearest_station(current_location)[0]
-
-    # return nearest_station[2]
-    # nearest_station = min(
-    #     STATIONS, key=lambda station: get_distance(current_location, station)
-    # )
-    # distance_to_station = get_distance(current_location, nearest_station)
-    # distance_to_nearest_station = nearest_station[2]
+# Return straight-line distance in miles between two locations
+def get_distance(start, end):
+    # Request directions
+    return geodesic(start, end).miles
 
 
 # Return a list of successors in the form (action, state, step_cost)
@@ -225,7 +200,11 @@ def successor(state):
 
 def goal_test(state):
     current_location, current_range = state
-    return current_location == DESTINATION and current_range >= THRESHOLD
+
+    return (
+        get_distance(current_location, DESTINATION) <= 0.5
+        and current_range >= THRESHOLD
+    )
 
 
 # STATIONS = get_stations_nearby_route(START, DESTINATION)
@@ -300,9 +279,7 @@ def a_star(initial_state, successor, goal_test, heuristic):
 # print(path)
 
 if __name__ == "__main__":
-    state = ("baldwinsville, NY", 40)
-    print(f'Continue: {step_cost(state, ("Continue", 30))}')
-    print(f'Divert: {step_cost(state, ("Divert", 30))}')
+    exit()
 
 # # Logic for optimal path
 # def successor1(state):
