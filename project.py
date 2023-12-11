@@ -28,14 +28,14 @@ THRESHOLD = 20  # mi
 DIST_FROM_STATION = 10  # mi
 GOAL_RADIUS = 0.2  # mi
 
-start_str = "dallas, texas"
+start_str = "dallas, tx"
 start_geocode_result = gmaps.geocode(start_str)[0]["geometry"]["location"]
 START = (
     start_geocode_result["lat"],
     start_geocode_result["lng"],
 )
 
-dest_str = "houston, texas"
+dest_str = "san francisco, ca"
 dest_geocode_result = gmaps.geocode(dest_str)[0]["geometry"]["location"]
 DESTINATION = (
     dest_geocode_result["lat"],
@@ -258,6 +258,9 @@ def heuristic(state):
     current_location, current_range = state
 
     dist = get_distance(current_location, DESTINATION)
+
+    if dist == 0:
+        return 0
 
     heuristic = dist / (1 + math.exp((math.log(dist) * (current_range - dist)) / dist))
 
