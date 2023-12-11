@@ -3,16 +3,8 @@ import googlemaps
 import requests
 import math
 from pprint import pprint
-
-# Constants
-MAX_RANGE = 400  # mi
-THRESHOLD = 50  # mi
-DIST_FROM_STATION = 10  # mi
-NEW_RANGE = MAX_RANGE
-W = 3
-START = "baldwinsville, ny"
-DESTINATION = "boston, ma"
-initial_state = (START, MAX_RANGE)
+from util import PriorityQueue
+from geopy.distance import geodesic
 
 # Initialize Google Maps API client
 google_api_file = open("google_api_key.txt", "r")
@@ -25,6 +17,21 @@ nrel_api_file = open("nrel_api_key.txt", "r")
 nrel_api_key = nrel_api_file.read()
 nrel_api_file.close()
 
+# Constants
+MAX_RANGE = 300  # mi
+THRESHOLD = 50  # mi
+DIST_FROM_STATION = 10  # mi
+GOAL_RADIUS = 0.5 # mi
+
+# Generate start location lat/long pair
+start_result = gmaps.geocode("baldwinsville, ny")[0]["geometry"]["location"]
+START = (start_result["lat"], start_result["lng"])
+
+# Generate destination location lat/long pair
+dest_result = gmaps.geocode("boston, ma")[0]["geometry"]["location"]
+DESTINATION = (dest_result["lat"], dest_result["lng"])
+
+initial_state = (START, MAX_RANGE)
 
 class Node:
     def __init__(self, state, path, cost):
@@ -48,31 +55,30 @@ def get_waypoints_along_route(current_location, destination):
         (
             step["end_location"]["lat"],
             step["end_location"]["lng"],
-            step["distance"]["value"] / 1609,  # convert to mi
         )
         for step in steps
     ]
 
     return waypoints
 
+WAYPOINTS = get_waypoints_along_route(START, DESTINATION)
 
-def get_next_waypoint(current_location, destination):
-    waypoints = get_waypoints_along_route(current_location, destination)
 
-    if waypoints:
-        return waypoints[0]
+# # Return distance in miles between two locations
+# def get_distance(start, end):
+#     # Request directions
+#     directions_result = gmaps.directions(start, end, mode="driving")
 
+#     # Extract distance in miles
+#     distance = directions_result[0]["legs"][0]["distance"]["value"] / 1609
+
+#     return distance
 
 # Return distance in miles between two locations
 def get_distance(start, end):
-    # Request directions
-    directions_result = gmaps.directions(start, end, mode="driving")
-
-    # Extract distance in miles
-    distance = directions_result[0]["legs"][0]["distance"]["value"] / 1609
-
+    # Calculate the distance
+    distance = geodesic(start, end).miles
     return distance
-
 
 # Return list of charging stations within a given range of a route
 def get_stations_along_route(start, end):
@@ -113,7 +119,6 @@ def get_stations_along_route(start, end):
             (
                 station["latitude"],
                 station["longitude"],
-                station["distance"],
             )
             for station in data["fuel_stations"]
         ]
@@ -122,40 +127,53 @@ def get_stations_along_route(start, end):
         # Handle cases where 'fuel_stations' is not in the response
         return []
 
+STATIONS = get_stations_along_route(START, DESTINATION)
 
-# Return the nearest station within a distance of a given location
-def get_nearest_station(location):
-    url = "https://developer.nrel.gov/api/alt-fuel-stations/v1/nearest.json"
+# # Return the nearest station within a distance of a given location
+# def get_nearest_station(location):
+#     url = "https://developer.nrel.gov/api/alt-fuel-stations/v1/nearest.json"
 
-    params = {
-        "api_key": nrel_api_key,
-        "location": location,
-        "radius": DIST_FROM_STATION * 0.621371,  # Convert to mi
-        "fuel_type": "ELEC",
-        "ev_charging_level": "dc_fast",
-        "limit": 1,
-        "status": "E",
-        "access": "public",
-    }
+#     params = {
+#         "api_key": nrel_api_key,
+#         "radius": "infinite",  # Convert to mi
+#         "fuel_type": "ELEC",
+#         "ev_charging_level": "dc_fast",
+#         "limit": 1,
+#         "status": "E",
+#         "access": "public",
+#     }
 
-    # Make API request
-    response = requests.get(url, params=params)
-    data = response.json()
+#     if type(location) == tuple:
+#         params.update({
+#             "latitude": location[0],
+#             "longitude": location[1]
+#         })
+#     elif type(location) == str:
+#         params.update({
+#             "location": location
+#         })
+#     else:
+#         return []
 
-    # Check if 'fuel_stations' key exists in the response
-    if "fuel_stations" in data and data["fuel_stations"]:
-        stations = [
-            (
-                station["latitude"],
-                station["longitude"],
-                station["distance"],
-            )
-            for station in data["fuel_stations"]
-        ]
-        return stations
-    else:
-        # Handle cases where 'fuel_stations' is not in the response
-        return []
+#     # Make API request
+#     response = requests.get(url, params=params)
+#     data = response.json()
+
+#     # Check if 'fuel_stations' key exists in the response
+#     if "fuel_stations" in data and data["fuel_stations"]:
+#         stations = [
+#             (
+#                 station["latitude"],
+#                 station["longitude"],
+#                 station["distance"],
+#             )
+#             for station in data["fuel_stations"]
+#         ]
+
+#         return stations[0]
+#     else:
+#         # Handle cases where 'fuel_stations' is not in the response
+#         return []
 
 
 # TODO: Convert this to edge cost
@@ -164,9 +182,11 @@ def step_cost(state, action):
     action_str, distance = action
 
     if action_str == "Continue":
-        return distance + 1 / (0.5 + math.exp((current_range - THRESHOLD) / THRESHOLD))
+        return 1 / (1 + math.exp((current_range - distance) / THRESHOLD))
     elif action_str == "Divert":
-        return distance + 1 / (0.5 + math.exp(-(current_range - THRESHOLD) / THRESHOLD))
+        return 1 / (1 + math.exp(-(current_range - distance) / THRESHOLD))
+    else:
+        return
 
     # distance_to_destination = get_distance(current_location, DESTINATION)
 
@@ -189,43 +209,54 @@ def step_cost(state, action):
 def successor(state):
     current_location, current_range = state
     successors = []
+    
+    # filter waypoints and stations within range
+    waypoints_within_range = filter(lambda waypoint: current_range - THRESHOLD >= get_distance(current_location, waypoint), WAYPOINTS)
+    # print(list(waypoints_within_range))
+    stations_within_range = filter(lambda station: current_range - THRESHOLD >= get_distance(current_location, station), STATIONS)
+    # print(list(stations_within_range))
 
-    # waypoints = get_waypoints_along_route(current_location, DESTINATION)
-    distance = get_next_waypoint(current_location, DESTINATION)[2]
-    next_action = ("Continue", distance)
-    successors.append(next_action, step_cost(state, next_action))
+    # if status == "driving":
+    #     # waypoints = get_waypoints_along_route(current_location, DESTINATION)
 
-    # stations = get_stations_along_route(current_location, DESTINATION)
-    distance = get_nearest_station(current_location)[2]
-    next_action = ("Divert", distance)
-    successors.append(next_action, step_cost(state, next_action))
+    #     lat, lng, distance = next_waypoint
+    #     next_action = ("Continue", distance)
+    #     if (current_range - THRESHOLD > distance):
+    #         successors.append((next_action, ((lat, lng), current_range - distance, "driving"), step_cost(state, next_action)))
 
-    # for waypoint in waypoints:
-    #     distance_to_waypoint = get_distance(current_location, waypoint)
+    #     # stations = get_stations_along_route(current_location, DESTINATION)
+    #     lat, lng, distance = get_nearest_station(current_location)
+    #     next_action = ("Divert", distance)
+    #     successors.append((next_action, ((lat, lng), MAX_RANGE, "charging"), step_cost(state, next_action)))
 
-    #     # Add waypoint as a successor if within range
-    #     if current_range >= distance_to_waypoint:
-    #         new_range = current_range - distance_to_waypoint
-    #         next_state = (waypoint, new_range)
-    #         step_cost = distance_to_waypoint
-    #         successors.append(("Drive", next_state, step_cost))
+    # if status == "charging":
+    #     lat, lng, distance = get_next_waypoint(current_location, DESTINATION)
+    #     next_action = ("Continue", distance)
+    #     successors.append((next_action, ((lat, lng), current_range - distance, "driving"), step_cost(state, next_action)))
 
-    # if stations:
-    #     for station in stations:
-    #         distance_to_station = get_distance(current_location, station)
+    for waypoint in waypoints_within_range:
+        distance_to_waypoint = get_distance(current_location, waypoint)
 
-    #         # Add charging station as a successor if within range
-    #         if current_range >= distance_to_station + THRESHOLD:
-    #             next_state = (station, NEW_RANGE)
-    #             step_cost = distance_to_station
-    #             successors.append(("Charge", next_state, step_cost))
+        new_range = current_range - distance_to_waypoint
+        next_state = (waypoint, new_range)
+        next_action = ("Continue", distance_to_waypoint)
+        successors.append((next_action, next_state, step_cost(state, next_action)))
+
+    for station in stations_within_range:
+        distance_to_station = get_distance(current_location, station)
+        
+        next_state = (station, MAX_RANGE)
+        next_action = ("Divert", distance_to_station)
+        successors.append(("Charge", next_state, step_cost(state, next_action)))
 
     return successors
 
 
 def goal_test(state):
     current_location, current_range = state
-    return current_location == DESTINATION and current_range >= THRESHOLD
+    # current_location is within a certain distance of the destination
+    distance_to_destination = get_distance(current_location, DESTINATION)
+    return distance_to_destination <= GOAL_RADIUS and current_range >= THRESHOLD
 
 
 # STATIONS = get_stations_nearby_route(START, DESTINATION)
@@ -255,7 +286,50 @@ def heuristic(state):
         + math.exp(MAX_RANGE / current_range) * distance_to_nearest_station
     )
 
+# Uniform Cost Search
+def ucs(initial_state, successor, goal_test):
+    initial_node = Node(initial_state, [], 0)
+    frontier = PriorityQueue()
+    frontier.push(initial_node, 0)
+    explored = set()
+    
+    while not frontier.isEmpty():
+        curr_node: Node = frontier.pop()
+        curr_state = curr_node.state
+        
+        print(curr_state)
 
+        explored.add(curr_state)
+
+        if goal_test(curr_state):
+            print("Goal!")
+            print(f"Current state: {curr_node.state}")
+            print(f"Current path: {curr_node.path}")
+            return curr_node.path
+        
+        for action, next_state, step_cost in successor(curr_node.state):
+            next_cost = curr_node.cost + step_cost
+            next_node = Node(next_state, curr_node.path + [action], next_cost)
+
+            if next_state not in explored:
+                found = False
+                existing_priority = 0
+                # Check for node with next_state in the frontier 
+                for priority, _, item in frontier.heap:
+                    if item.state == next_state: # maybe not item.state
+                        found = True
+                        existing_priority = priority
+                        break
+                
+                # If frontier does not contain node with next_state:
+                if not found:
+                    frontier.push(next_node, next_cost)
+                # If next_state's node in frontier has priority > next_cost:
+                elif next_cost < existing_priority:
+                    frontier.update(next_node, next_cost)
+
+
+# Weighted A* Search
 def a_star(initial_state, successor, goal_test, heuristic):
     initial_node = Node(initial_state, [], 0)
     frontier = [(initial_node, heuristic(initial_state))]
@@ -300,9 +374,8 @@ def a_star(initial_state, successor, goal_test, heuristic):
 # print(path)
 
 if __name__ == "__main__":
-    state = ("baldwinsville, NY", 40)
-    print(f'Continue: {step_cost(state, ("Continue", 30))}')
-    print(f'Divert: {step_cost(state, ("Divert", 30))}')
+    ucs(initial_state, successor, goal_test)
+    # print(get_nearest_station())
 
 # # Logic for optimal path
 # def successor1(state):
