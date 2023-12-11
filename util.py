@@ -1,8 +1,24 @@
 import heapq
 
+
+# Container with LIFO queuing policy
+class Stack:
+    def __init__(self):
+        self.list = []
+
+    def push(self, item):
+        self.list.append(item)
+
+    def pop(self):
+        return self.list.pop()
+
+    def isEmpty(self):
+        return len(self.list) == 0
+
+
 # Priority queue to access lowest priority item in O(1) time
 class PriorityQueue:
-    def  __init__(self):
+    def __init__(self):
         self.heap = []
         self.count = 0
 
