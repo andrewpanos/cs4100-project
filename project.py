@@ -6,9 +6,8 @@ from pprint import pprint
 from util import PriorityQueue, Stack
 from geopy.distance import geodesic
 import networkx as nx
-import matplotlib.pyplot as plt
-import numpy as np
 import folium
+import argparse
 
 # Initialize Google Maps API client
 google_api_file = open("google_api_key.txt", "r")
@@ -22,27 +21,17 @@ nrel_api_file = open("nrel_api_key.txt", "r")
 nrel_api_key = nrel_api_file.read()
 nrel_api_file.close()
 
-# Constants
-MAX_RANGE = 400  # mi
-THRESHOLD = 20  # mi
-DIST_FROM_STATION = 10  # mi
-GOAL_RADIUS = 0.2  # mi
 
-start_str = "dallas, tx"
-start_geocode_result = gmaps.geocode(start_str)[0]["geometry"]["location"]
-START = (
-    start_geocode_result["lat"],
-    start_geocode_result["lng"],
-)
-
-dest_str = "san francisco, ca"
-dest_geocode_result = gmaps.geocode(dest_str)[0]["geometry"]["location"]
-DESTINATION = (
-    dest_geocode_result["lat"],
-    dest_geocode_result["lng"],
-)
-
-initial_state = (START, 100)
+class Constants:
+    MAX_RANGE = 400  # mi
+    THRESHOLD = 20  # mi
+    DIST_FROM_STATION = 10  # mi
+    GOAL_RADIUS = 0.2  # mi
+    START = ""
+    DESTINATION = ""
+    WAYPOINTS = []
+    STATIONS = []
+    ROUTE_GRAPH = None
 
 
 class Node:
@@ -63,7 +52,7 @@ def get_distance(start, end):
 
 # Get the name of the node in ROUTE_GRAPH from a (lat, lng) pair
 def get_node_from_pos(pos):
-    route_data = dict(ROUTE_GRAPH.nodes.data("pos"))
+    route_data = dict(Constants.ROUTE_GRAPH.nodes.data("pos"))
     return list(route_data.keys())[list(route_data.values()).index(pos)]
 
 
@@ -107,7 +96,7 @@ def get_stations_along_route(start, end):
 
     data = {
         "route": linestring,
-        "distance": DIST_FROM_STATION,
+        "distance": Constants.DIST_FROM_STATION,
         "fuel_type": "ELEC",
         "ev_charging_level": "dc_fast",
         "status": "E",
@@ -140,22 +129,16 @@ def get_stations_along_route(start, end):
         raise Exception("No fuel stations found along route.")
 
 
-WAYPOINTS = get_waypoints_along_route(START, DESTINATION)
-WAYPOINTS.insert(0, START)
-WAYPOINTS.append(DESTINATION)
-STATIONS = get_stations_along_route(START, DESTINATION)
-
-
 def generate_route_graph():
     G = nx.DiGraph()
 
-    for i, waypoint in enumerate(WAYPOINTS):
+    for i, waypoint in enumerate(Constants.WAYPOINTS):
         G.add_node(f"waypoint_{i}", pos=waypoint)
 
-    for i, station in enumerate(STATIONS):
+    for i, station in enumerate(Constants.STATIONS):
         G.add_node(f"station_{i}", pos=station)
 
-    for i in range(len(WAYPOINTS) - 1):
+    for i in range(len(Constants.WAYPOINTS) - 1):
         G.add_edge(f"waypoint_{i}", f"waypoint_{i + 1}")
 
     waypoint_nodes = [node for node in G.nodes if node.startswith("waypoint")]
@@ -175,9 +158,6 @@ def generate_route_graph():
     return G
 
 
-ROUTE_GRAPH = generate_route_graph()
-
-
 # Return a list of successors in the form (action, state, step_cost)
 def successor(state):
     current_location, current_range = state
@@ -185,19 +165,19 @@ def successor(state):
 
     current_node = get_node_from_pos(current_location)
 
-    adjacent_nodes = ROUTE_GRAPH[current_node]
+    adjacent_nodes = Constants.ROUTE_GRAPH[current_node]
 
     for node in adjacent_nodes:
         # Ensure node is within range
         if (
-            get_distance(current_location, ROUTE_GRAPH.nodes[node]["pos"])
-            >= current_range - THRESHOLD
+            get_distance(current_location, Constants.ROUTE_GRAPH.nodes[node]["pos"])
+            >= current_range - Constants.THRESHOLD
         ):
             continue
 
         # Next waypoint from this one
         if node.startswith("waypoint"):
-            waypoint = ROUTE_GRAPH.nodes[node]["pos"]
+            waypoint = Constants.ROUTE_GRAPH.nodes[node]["pos"]
             distance_to_waypoint = get_distance(current_location, waypoint)
             new_range = current_range - distance_to_waypoint
             next_state = (waypoint, new_range)
@@ -206,41 +186,12 @@ def successor(state):
 
         # Nearby stations
         elif node.startswith("station"):
-            station = ROUTE_GRAPH.nodes[node]["pos"]
+            station = Constants.ROUTE_GRAPH.nodes[node]["pos"]
             distance_to_station = get_distance(current_location, station)
-            new_range = MAX_RANGE
+            new_range = Constants.MAX_RANGE
             next_state = (station, new_range)
             next_action = ("Station", distance_to_station, station)
             successors.append((next_action, next_state, distance_to_station))
-
-    # filter waypoints and stations within range
-    # waypoints_within_range = filter(
-    #     lambda waypoint: current_range - THRESHOLD
-    #     >= get_distance(current_location, waypoint),
-    #     WAYPOINTS,
-    # )
-    # # print(list(waypoints_within_range))
-    # stations_within_range = filter(
-    #     lambda station: current_range - THRESHOLD
-    #     >= get_distance(current_location, station),
-    #     STATIONS,
-    # )
-    # # print(list(stations_within_range))
-
-    # for waypoint in waypoints_within_range:
-    #     distance_to_waypoint = get_distance(current_location, waypoint)
-
-    #     new_range = current_range - distance_to_waypoint
-    #     next_state = (waypoint, new_range)
-    #     next_action = ("Continue", distance_to_waypoint)
-    #     successors.append((next_action, next_state, step_cost(state, next_action)))
-
-    # for station in stations_within_range:
-    #     distance_to_station = get_distance(current_location, station)
-
-    #     next_state = (station, MAX_RANGE)
-    #     next_action = ("Divert", distance_to_station)
-    #     successors.append(("Charge", next_state, step_cost(state, next_action)))
 
     return successors
 
@@ -249,15 +200,16 @@ def goal_test(state):
     current_location, current_range = state
 
     return (
-        get_distance(current_location, DESTINATION) <= GOAL_RADIUS
-        and current_range >= THRESHOLD
+        get_distance(current_location, Constants.DESTINATION)
+        <= Constants.DIST_FROM_GOAL
+        and current_range >= Constants.THRESHOLD
     )
 
 
 def heuristic(state):
     current_location, current_range = state
 
-    dist = get_distance(current_location, DESTINATION)
+    dist = get_distance(current_location, Constants.DESTINATION)
 
     if dist == 0:
         return 0
@@ -381,14 +333,14 @@ def plot_path(path: list):
     route_map = folium.Map(location=route_start, zoom_start=10)
 
     folium.Marker(
-        location=START,
+        location=Constants.START,
         popup="Start",
         tooltip="Start",
         icon=folium.Icon(color="blue"),
     ).add_to(route_map)
 
     folium.Marker(
-        location=DESTINATION,
+        location=Constants.DESTINATION,
         popup="Destination",
         tooltip="Destination",
         icon=folium.Icon(color="green"),
@@ -398,22 +350,114 @@ def plot_path(path: list):
         if action[0] == "Waypoint":
             folium.Marker(
                 location=action[2],
-                popup="Waypoint",
-                tooltip=f"Step {i + 1}",
+                popup=action[2],
+                tooltip=f"Step {i + 1}: Waypoint",
                 icon=folium.Icon(color="black"),
             ).add_to(route_map)
         elif action[0] == "Station":
             folium.Marker(
                 location=action[2],
-                popup="Station",
-                tooltip=f"Step {i + 1}",
+                popup=action[2],
+                tooltip=f"Step {i + 1}: Station",
                 icon=folium.Icon(color="red"),
             ).add_to(route_map)
 
-    route_map.save(f"{start_str}_{dest_str}.html")
+    route_map.save(f"routes/{start_str}_{dest_str}.html")
 
 
 if __name__ == "__main__":
+    DEFAULT = dict(
+        max_range=400, initial_range=400, threshold=50, station_dist=10, goal_dist=0.2
+    )
+
+    parser = argparse.ArgumentParser(
+        prog="EV Route Finder",
+        description="Finds the quickest route between two locations, optimized for EVs.",
+    )
+
+    parser.add_argument(
+        "-s",
+        "--start",
+        help="Start location for this route.",
+        required=True,
+    )
+    parser.add_argument(
+        "-d",
+        "--dest",
+        help="Destination location for this route.",
+        required=True,
+    )
+    parser.add_argument(
+        "--max-range",
+        help="Maximum range (mi) on a full charge.",
+        required=False,
+        default=DEFAULT["max_range"],
+        type=int,
+    )
+    parser.add_argument(
+        "--initial-range",
+        help="Initial range (mi) of the vehicle.",
+        required=False,
+        default=DEFAULT["initial_range"],
+        type=int,
+    )
+    parser.add_argument(
+        "--threshold",
+        help="Minimum range (mi) to maintain at all times.",
+        required=False,
+        default=DEFAULT["threshold"],
+        type=int,
+    )
+    parser.add_argument(
+        "--station-dist",
+        help="Maximum distance (mi) from route to find charging stations.",
+        required=False,
+        default=DEFAULT["station_dist"],
+        type=int,
+    )
+    parser.add_argument(
+        "--goal-dist",
+        help="Maximum allowed distance (mi) from the destination to end route.",
+        required=False,
+        default=DEFAULT["goal_dist"],
+        type=int,
+    )
+
+    args = parser.parse_args()
+
+    Constants.MAX_RANGE = args.max_range
+    Constants.THRESHOLD = args.threshold
+    Constants.DIST_FROM_STATION = args.station_dist
+    Constants.DIST_FROM_GOAL = args.goal_dist
+
+    start_str = args.start
+    start_geocode_result = gmaps.geocode(start_str)[0]["geometry"]["location"]
+    Constants.START = (
+        start_geocode_result["lat"],
+        start_geocode_result["lng"],
+    )
+
+    dest_str = args.dest
+    dest_geocode_result = gmaps.geocode(dest_str)[0]["geometry"]["location"]
+    Constants.DESTINATION = (
+        dest_geocode_result["lat"],
+        dest_geocode_result["lng"],
+    )
+
+    initial_state = (Constants.START, 400)
+
+    Constants.WAYPOINTS = get_waypoints_along_route(
+        Constants.START, Constants.DESTINATION
+    )
+    Constants.WAYPOINTS.insert(0, Constants.START)
+    Constants.WAYPOINTS.append(Constants.DESTINATION)
+
+    Constants.STATIONS = get_stations_along_route(
+        Constants.START, Constants.DESTINATION
+    )
+
+    Constants.ROUTE_GRAPH = generate_route_graph()
+
     final_path = a_star(initial_state, successor, goal_test, heuristic)
 
     plot_path(final_path)
