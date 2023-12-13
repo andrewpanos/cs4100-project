@@ -365,7 +365,7 @@ def plot_path(path: list):
     route_map.save(f"routes/{start_str}_{dest_str}.html")
 
 
-if __name__ == "__main__":
+def main():
     DEFAULT = dict(
         max_range=400, initial_range=400, threshold=50, station_dist=10, goal_dist=0.2
     )
@@ -461,6 +461,10 @@ if __name__ == "__main__":
     final_path = a_star(initial_state, successor, goal_test, heuristic)
 
     plot_path(final_path)
+
+
+if __name__ == "__main__":
+    main()
 
 
 # # Logic for optimal path
