@@ -14,7 +14,20 @@ class Stack:
 
     def isEmpty(self):
         return len(self.list) == 0
+    
+# Container with FIFO queuing policy
+class Queue:
+    def __init__(self):
+        self.list = []
 
+    def push(self,item):
+        self.list.insert(0,item)
+
+    def pop(self):
+        return self.list.pop()
+
+    def isEmpty(self):
+        return len(self.list) == 0
 
 # Priority queue to access lowest priority item in O(1) time
 class PriorityQueue:
