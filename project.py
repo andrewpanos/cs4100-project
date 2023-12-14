@@ -1,4 +1,6 @@
 import heapq
+import json
+import webbrowser
 import googlemaps
 import requests
 import math
@@ -24,12 +26,19 @@ nrel_api_file.close()
 
 
 class Constants:
-    MAX_RANGE = 400  # mi
-    THRESHOLD = 20  # mi
+    """
+    Class for storing various constants.
+    """
+
+    MAX_RANGE = 300  # mi
+    MIN_THRESHOLD = 0.1 * MAX_RANGE  # mi, 10% of max range
+    MAX_THRESHOLD = 0.8 * MAX_RANGE  # mi, 80% of max range
+    TIME_TO_CHARGE = 25  # min, from 10% to 80%
     DIST_FROM_STATION = 10  # mi
-    GOAL_RADIUS = 0.2  # mi
-    START = ""
-    DESTINATION = ""
+    DIST_FROM_GOAL = 0.2  # mi
+    AVERAGE_SPEED = 0  # mph
+    START = None
+    DESTINATION = None
     WAYPOINTS = []
     STATIONS = []
     ROUTE_GRAPH = None
@@ -47,8 +56,27 @@ class Node:
 
 # Return straight-line distance in miles between two locations
 def get_distance(start, end):
-    # Request directions
+    """
+    Return the straight-line distance (in miles) between two locations.
+
+    Params
+    ------
+    `start`: (int, int)
+        Initial location as a (latitude, longitude) pair
+    `end`: (int, int)
+        Final location as a (latitude, longitude) pair
+
+    Returns
+    -------
+    Straight-line distance (in miles) between `start` and `end`
+    """
+
     return geodesic(start, end).miles
+
+
+# Get the duration in minutes to travel between two locations
+def get_duration(start, end):
+    return get_distance(start, end) / Constants.AVERAGE_SPEED * 60
 
 
 # Get the name of the node in ROUTE_GRAPH from a (lat, lng) pair
@@ -176,18 +204,45 @@ def generate_route_graph():
         G.add_edge(f"waypoint_{i}", f"waypoint_{i + 1}")
 
     waypoint_nodes = [node for node in G.nodes if node.startswith("waypoint")]
+    station_nodes = [node for node in G.nodes if node.startswith("station")]
 
-    for station_node in G.nodes:
-        if station_node.startswith("station"):
-            station_pos = G.nodes[station_node]["pos"]
-            nearest_waypoints = sorted(
-                waypoint_nodes,
-                key=lambda node: get_distance(G.nodes[node]["pos"], station_pos),
-            )[:2]
+    # Connect each station node to adjacent waypoints and future stations
+    for station_node in station_nodes:
+        station_pos = G.nodes[station_node]["pos"]
 
-            for waypoint_node in nearest_waypoints:
-                G.add_edge(station_node, waypoint_node)
-                G.add_edge(waypoint_node, station_node)
+        waypoints_ahead = []
+        waypoints_behind = []
+
+        for waypoint_node in waypoint_nodes:
+            waypoint_pos = G.nodes[waypoint_node]["pos"]
+            waypoint_start_dist = get_distance(waypoint_pos, Constants.START)
+            station_start_dist = get_distance(station_pos, Constants.START)
+            if waypoint_start_dist > station_start_dist:
+                waypoints_ahead.append((waypoint_node, waypoint_pos))
+            elif waypoint_start_dist < station_start_dist:
+                waypoints_behind.append((waypoint_node, waypoint_pos))
+
+        if waypoints_behind:
+            nearest_waypoint_behind = min(
+                waypoints_behind,
+                key=lambda waypoint: get_distance(station_pos, waypoint[1]),
+            )[0]
+            G.add_edge(nearest_waypoint_behind, station_node)
+
+        if waypoints_ahead:
+            nearest_waypoint_ahead = min(
+                waypoints_ahead,
+                key=lambda waypoint: get_distance(station_pos, waypoint[1]),
+            )[0]
+            G.add_edge(station_node, nearest_waypoint_ahead)
+
+        for next_station_node in station_nodes:
+            next_station_pos = G.nodes[next_station_node]["pos"]
+            if (
+                get_distance(next_station_pos, Constants.DESTINATION)
+                < get_distance(station_pos, Constants.DESTINATION)
+            ) and get_distance(station_pos, next_station_pos) < Constants.MAX_THRESHOLD:
+                G.add_edge(station_node, next_station_node)
 
     return G
 
@@ -205,7 +260,7 @@ def successor(state):
         # Ensure node is within range
         if (
             get_distance(current_location, Constants.ROUTE_GRAPH.nodes[node]["pos"])
-            >= current_range - Constants.THRESHOLD
+            >= current_range - Constants.MIN_THRESHOLD
         ):
             continue
 
@@ -222,7 +277,7 @@ def successor(state):
         elif node.startswith("station"):
             station = Constants.ROUTE_GRAPH.nodes[node]["pos"]
             distance_to_station = get_distance(current_location, station)
-            new_range = Constants.MAX_RANGE
+            new_range = Constants.MAX_THRESHOLD
             next_state = (station, new_range)
             next_action = ("Station", distance_to_station, station)
             successors.append((next_action, next_state, distance_to_station))
@@ -236,10 +291,11 @@ def goal_test(state):
     return (
         get_distance(current_location, Constants.DESTINATION)
         <= Constants.DIST_FROM_GOAL
-        and current_range >= Constants.THRESHOLD
+        and current_range >= Constants.MIN_THRESHOLD
     )
 
 
+# Path-finding dies at MAX_RANGE of ~330... why?
 def heuristic(state):
     current_location, current_range = state
 
@@ -251,6 +307,42 @@ def heuristic(state):
     heuristic = dist / (1 + math.exp((math.log(dist) * (current_range - dist)) / dist))
 
     return heuristic
+
+
+# Breadth First Search
+def bfs(initial_state, successor, goal_test):
+    initial_node = Node(initial_state, [])
+    frontier = Queue()
+    frontier.push(initial_node)
+    explored = set()
+
+    while not frontier.isEmpty():
+        curr_node: Node = frontier.pop()
+        curr_state = curr_node.state
+        explored.add(curr_state)
+
+        print(curr_state)
+
+        if goal_test(curr_state):
+            print("Goal!")
+            print(f"Current state: {curr_node.state}")
+            print(f"Current path: {curr_node.path}")
+            return curr_node.path
+
+        for action, next_state, _ in successor(curr_node.state):
+            next_node = Node(next_state, curr_node.path + [action])
+
+            if next_state not in explored:
+                found = False
+                # Check for node with next_state in the frontier
+                for item in frontier.list:
+                    if item.state == next_state:  # maybe not item.state
+                        found = True
+                        break
+
+                # If frontier does not contain node with next_state:
+                if not found:
+                    frontier.push(next_node)
 
 
 def dfs(initial_state, successor, goal_test):
@@ -345,9 +437,6 @@ def a_star(initial_state, successor, goal_test, heuristic):
         for action, next_state, step_cost in successor(curr_node.state):
             next_cost = curr_node.cost + step_cost
             next_node = Node(next_state, curr_node.path + [action], next_cost)
-            # print(
-            #     f"Adding successor: {next_state} with action: {action} and step cost: {step_cost}"
-            # )
             next_priority = next_cost + heuristic(next_state)  # * W
 
             if next_state not in explored and all(
@@ -362,7 +451,7 @@ def a_star(initial_state, successor, goal_test, heuristic):
                         break
 
 
-def plot_path(path: list, start_str: str, dest_str: str):
+def plot_path(path, start_str, dest_str):
     route_start = path[0][2]
     route_map = folium.Map(location=route_start, zoom_start=10)
 
@@ -396,12 +485,51 @@ def plot_path(path: list, start_str: str, dest_str: str):
                 icon=folium.Icon(color="red"),
             ).add_to(route_map)
 
-    route_map.save(f"routes/{start_str}_{dest_str}.html")
+    route_map.save(f"routes/{start_str}_{dest_str}_{Constants.MAX_RANGE}.html")
+
+
+def plot_google_maps_route(path):
+    start = path[0][2]
+    end = path[-1][2]
+    waypoints = [(f"{lat},{lng}") for _, _, (lat, lng) in path[1:-1]]
+    waypoints_str = "|".join(waypoints)
+
+    # Build the URL
+    directions_url = f"https://maps.googleapis.com/maps/api/directions/json?origin={start[0]},{start[1]}&destination={end[0]},{end[1]}&waypoints={waypoints_str}&key={google_api_key}&mode=driving"
+
+    # Make the request
+    response = requests.get(directions_url)
+    directions_data = json.loads(response.text)
+
+    # Get the total driving time in minutes
+    total_driving_time = 0
+    for leg in directions_data["routes"][0]["legs"]:
+        total_driving_time += leg["duration"]["value"] / 60  # convert to minutes
+
+    # Get the total charging time
+    total_charging_time = 0
+    for _, action in enumerate(path):
+        if action[0] == "Station":
+            total_charging_time += action[1]
+
+    total_time = total_driving_time + total_charging_time
+
+    print(f"Total driving time: {round(total_driving_time)} minutes")
+    print(f"Total charging time: {round(total_charging_time)} minutes")
+    print(f"Total time: {round(total_time)} minutes")
+
+    # Build the URL for opening in a web browser
+    browser_url = f"https://www.google.com/maps/dir/?api=1&origin={start[0]},{start[1]}&destination={end[0]},{end[1]}&waypoints={waypoints_str}&key={google_api_key}&travelmode=driving"
+    webbrowser.open(browser_url)
 
 
 def main():
     DEFAULT = dict(
-        max_range=400, initial_range=400, threshold=50, station_dist=10, goal_dist=0.2
+        max_range=400,
+        initial_range=400,
+        time_to_charge=25,
+        station_dist=20,
+        goal_dist=0.2,
     )
 
     parser = argparse.ArgumentParser(
@@ -436,10 +564,10 @@ def main():
         type=int,
     )
     parser.add_argument(
-        "--threshold",
-        help="Minimum range (mi) to maintain at all times.",
+        "--time-to-charge",
+        help="Time (min) to charge from 10% to 80% (DC Fast).",
         required=False,
-        default=DEFAULT["threshold"],
+        default=DEFAULT["time_to_charge"],
         type=int,
     )
     parser.add_argument(
@@ -459,11 +587,15 @@ def main():
 
     args = parser.parse_args()
 
+    # Initialize simple constants from command line arguments
     Constants.MAX_RANGE = args.max_range
-    Constants.THRESHOLD = args.threshold
+    Constants.MIN_THRESHOLD = 0.1 * Constants.MAX_RANGE
+    Constants.MAX_THRESHOLD = 0.8 * Constants.MAX_RANGE
+    Constants.TIME_TO_CHARGE = args.time_to_charge
     Constants.DIST_FROM_STATION = args.station_dist
     Constants.DIST_FROM_GOAL = args.goal_dist
 
+    # Initialize START (lat, lng) pair by geocoding
     start_str = args.start
     start_geocode_result = gmaps.geocode(start_str)[0]["geometry"]["location"]
     Constants.START = (
@@ -471,6 +603,7 @@ def main():
         start_geocode_result["lng"],
     )
 
+    # Initialize DESTINATION (lat, lng) pair by geocoding
     dest_str = args.dest
     dest_geocode_result = gmaps.geocode(dest_str)[0]["geometry"]["location"]
     Constants.DESTINATION = (
@@ -478,7 +611,13 @@ def main():
         dest_geocode_result["lng"],
     )
 
-    initial_state = (Constants.START, 400)
+    initial_range = (
+        args.initial_range
+        if args.initial_range <= Constants.MAX_RANGE
+        else Constants.MAX_RANGE
+    )
+
+    initial_state = (Constants.START, initial_range)
 
     Constants.WAYPOINTS = get_waypoints_along_route(
         Constants.START, Constants.DESTINATION
@@ -494,46 +633,12 @@ def main():
 
     final_path = a_star(initial_state, successor, goal_test, heuristic)
 
-    plot_path(final_path, start_str, dest_str)
+    if final_path:
+        plot_path(final_path, start_str, dest_str)
+        # plot_google_maps_route(final_path)
+    else:
+        print(f"No route found!")
 
 
 if __name__ == "__main__":
     main()
-
-
-# # Logic for optimal path
-# def successor1(state):
-#     current_location, current_range = state
-#     successors = []
-#     last_waypoint_reached = None
-
-#     waypoints = get_adjacent_waypoints(current_location, destination)
-#     for i, waypoint in enumerate(waypoints):
-#         distance_to_next_waypoint = get_distance(current_location, waypoint)
-
-#         # Proceed to next waypoint if enough range
-#         if current_range >= distance_to_next_waypoint:
-#             new_range = current_range - distance_to_next_waypoint
-#             action = f"Waypoint {i}"
-#             next_state = (waypoint, new_range)
-#             step_cost = distance_to_next_waypoint
-#             successors.append((action, next_state, step_cost))
-#             last_waypoint_reached = waypoint
-#             current_location = waypoint
-#             current_range = new_range
-
-#         # Charge if range is not sufficient
-#         if current_range < distance_to_next_waypoint + THRESHOLD:
-#             nearest_station = min(STATIONS, key=lambda station: get_distance(current_location, station))
-#             distance_to_station = get_distance(current_location, nearest_station)
-#             if current_range >= distance_to_station:
-#                 action = f"Charging {i}"
-#                 next_state = (nearest_station, NEW_RANGE)
-#                 step_cost = distance_to_station
-#                 successors.append((action, next_state, step_cost))
-#                 current_location = last_waypoint_reached
-#                 current_range = NEW_RANGE
-
-#     return successors
-
-# print(successor1(initial_state))
