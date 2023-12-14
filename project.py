@@ -8,6 +8,7 @@ from geopy.distance import geodesic
 import networkx as nx
 import folium
 import argparse
+import pandas as pd
 
 # Initialize Google Maps API client
 google_api_file = open("google_api_key.txt", "r")
@@ -73,6 +74,39 @@ def get_waypoints_along_route(current_location, destination):
     ]
 
     return waypoints
+
+
+def get_vehicles():
+    url = f"https://developer.nrel.gov/api/vehicles/v1/light_duty_automobiles.json"
+
+    params = {"api_key": nrel_api_key, "fuel_id": 41}  # ID for electric vehicles
+
+    # Make API request
+    response = requests.get(url, params=params)
+
+    if response.status_code == 200:
+        data: dict = response.json()
+    else:
+        print(f"Error: {response.status_code} - {response.text}")
+        return
+
+    if data.get("result", None) == None:
+        print(f"Error: no result in data.")
+        return
+    else:
+        df = pd.json_normalize(data["result"])
+
+    # df.to_csv("ev_info.csv")
+
+    df[
+        [
+            "model_year",
+            "manufacturer_name",
+            "model",
+        ]
+    ]
+
+    return df
 
 
 # Return list of charging stations within a given range of a route
@@ -328,7 +362,7 @@ def a_star(initial_state, successor, goal_test, heuristic):
                         break
 
 
-def plot_path(path: list):
+def plot_path(path: list, start_str: str, dest_str: str):
     route_start = path[0][2]
     route_map = folium.Map(location=route_start, zoom_start=10)
 
@@ -460,7 +494,7 @@ def main():
 
     final_path = a_star(initial_state, successor, goal_test, heuristic)
 
-    plot_path(final_path)
+    plot_path(final_path, start_str, dest_str)
 
 
 if __name__ == "__main__":
