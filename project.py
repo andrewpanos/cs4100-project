@@ -11,6 +11,7 @@ import networkx as nx
 import folium
 import argparse
 import pandas as pd
+import cProfile
 
 # Initialize Google Maps API client
 google_api_file = open("google_api_key.txt", "r")
@@ -23,6 +24,9 @@ gmaps = googlemaps.Client(key=google_api_key)
 nrel_api_file = open("nrel_api_key.txt", "r")
 nrel_api_key = nrel_api_file.read()
 nrel_api_file.close()
+
+DEST_DIST_CACHE = {}
+START_DIST_CACHE = {}
 
 
 class Constants:
@@ -73,6 +77,34 @@ def get_distance(start, end):
     """
 
     return geodesic(start, end).miles
+
+
+def dist_from_start(location):
+    return get_distance(Constants.START, location)
+
+    start_dist = START_DIST_CACHE.get(location)
+
+    # If this location is not in the cache, calculate it and add it
+    if start_dist is None:
+        dist = get_distance(Constants.START, location)
+        START_DIST_CACHE[location] = dist
+        return dist
+    else:
+        return start_dist
+
+
+def dist_from_dest(location):
+    return get_distance(Constants.DESTINATION, location)
+
+    dest_dist = DEST_DIST_CACHE.get(location)
+
+    # If this location is not in the cache, calculate it and add it
+    if dest_dist is not None:
+        return dest_dist
+    else:
+        dist = get_distance(Constants.DESTINATION, location)
+        DEST_DIST_CACHE[location] = dist
+        return dist
 
 
 # Get the estimated duration (in minutes) to travel between two locations
@@ -207,8 +239,7 @@ def generate_route_graph():
     waypoint_nodes = [node for node in G.nodes if node.startswith("waypoint")]
     station_nodes = sorted(
         [node for node in G.nodes if node.startswith("station")],
-        key=lambda node: get_distance(G.nodes[node]["pos"], Constants.DESTINATION),
-        reverse=True,
+        key=lambda node: dist_from_start(G.nodes[node]["pos"]),
     )
 
     # Connect each station node to adjacent waypoints and future stations
@@ -221,8 +252,8 @@ def generate_route_graph():
 
         for waypoint_node in waypoint_nodes:
             waypoint_pos = G.nodes[waypoint_node]["pos"]
-            waypoint_start_dist = get_distance(waypoint_pos, Constants.START)
-            station_start_dist = get_distance(station_pos, Constants.START)
+            waypoint_start_dist = dist_from_start(waypoint_pos)
+            station_start_dist = dist_from_start(station_pos)
             if waypoint_start_dist > station_start_dist:
                 waypoints_ahead.append((waypoint_node, waypoint_pos))
             elif waypoint_start_dist < station_start_dist:
@@ -265,24 +296,24 @@ def successor(state):
     adjacent_nodes = Constants.ROUTE_GRAPH[current_node]
 
     for node in adjacent_nodes:
+        distance_to_node = get_distance(
+            current_location, Constants.ROUTE_GRAPH.nodes[node]["pos"]
+        )
         # Ensure node is within range
-        if (
-            get_distance(current_location, Constants.ROUTE_GRAPH.nodes[node]["pos"])
-            >= current_range - Constants.MIN_THRESHOLD
-        ):
+        if distance_to_node >= current_range - Constants.MIN_THRESHOLD:
             continue
 
         # Next waypoint from this one
         if node.startswith("waypoint"):
-            waypoint = Constants.ROUTE_GRAPH.nodes[node]["pos"]
-            distance_to_waypoint = get_distance(current_location, waypoint)
+            waypoint_pos = Constants.ROUTE_GRAPH.nodes[node]["pos"]
+            # distance_to_waypoint = get_distance(current_location, waypoint)
 
-            time_to_waypoint = distance_to_waypoint / Constants.AVERAGE_SPEED * 60
+            time_to_waypoint = distance_to_node / Constants.AVERAGE_SPEED * 60
 
-            new_range = current_range - distance_to_waypoint
-            next_state = (waypoint, new_range)
+            new_range = current_range - distance_to_node
+            next_state = (waypoint_pos, new_range)
 
-            next_action = ("Waypoint", time_to_waypoint, waypoint)
+            next_action = ("Waypoint", time_to_waypoint, waypoint_pos)
             successors.append((next_action, next_state, time_to_waypoint))
 
             # next_action = ("Waypoint", distance_to_waypoint, waypoint)
@@ -290,11 +321,11 @@ def successor(state):
 
         # Nearby stations
         elif node.startswith("station"):
-            station = Constants.ROUTE_GRAPH.nodes[node]["pos"]
-            distance_to_station = get_distance(current_location, station)
-            new_range = current_range - distance_to_station
-            time_to_station = distance_to_station / Constants.AVERAGE_SPEED * 60
+            station_pos = Constants.ROUTE_GRAPH.nodes[node]["pos"]
+            # distance_to_station = get_distance(current_location, station)
 
+            new_range = current_range - distance_to_node
+            time_to_station = distance_to_node / Constants.AVERAGE_SPEED * 60
             if new_range >= Constants.MAX_THRESHOLD:
                 charge_time = 0
             else:
@@ -302,14 +333,13 @@ def successor(state):
                     Constants.MAX_THRESHOLD - new_range
                 ) / Constants.CHARGE_RATE
                 new_range = Constants.MAX_THRESHOLD
-
             total_time = charge_time + time_to_station
-
-            next_state = (station, new_range)
-
-            next_action = ("Station", charge_time, station)
+            next_state = (station_pos, new_range)
+            next_action = ("Station", charge_time, station_pos)
             successors.append((next_action, next_state, total_time))
 
+            # new_range = Constants.MAX_THRESHOLD
+            # next_state = (station, new_range)
             # next_action = ("Station", distance_to_station, station)
             # successors.append((next_action, next_state, distance_to_station))
 
@@ -320,8 +350,7 @@ def goal_test(state):
     current_location, current_range = state
 
     return (
-        get_distance(current_location, Constants.DESTINATION)
-        <= Constants.DIST_FROM_GOAL
+        dist_from_dest(current_location) <= Constants.DIST_FROM_GOAL
         and current_range >= Constants.MIN_THRESHOLD
     )
 
@@ -329,27 +358,26 @@ def goal_test(state):
 def heuristic(state):
     current_location, current_range = state
 
-    # dist = get_distance(current_location, Constants.DESTINATION)
-    # if dist == 0:
-    #     return 0
-
-    # heuristic = dist / (
-    #     1
-    #     + math.exp((math.log(dist) * (current_range - dist)) / dist)
-    # )
-
-    time_to_dist = get_duration(current_location, Constants.DESTINATION)
-    range_as_time = current_range / Constants.AVERAGE_SPEED * 60
-
-    if time_to_dist == 0:
+    dist = dist_from_dest(current_location)
+    if dist == 0:
         return 0
 
-    heuristic = time_to_dist / (
-        1
-        + math.exp(
-            (math.log(time_to_dist) * (range_as_time - time_to_dist)) / time_to_dist
-        )
-    )
+    heuristic = dist / (1 + math.exp((math.log(dist) * (current_range - dist)) / dist))
+
+    # time_to_dist = get_duration(current_location, Constants.DESTINATION)
+    # range_as_time = current_range / Constants.AVERAGE_SPEED * 60
+    # max_threshold_dist = Constants.MAX_THRESHOLD / Constants.AVERAGE_SPEED * 60
+
+    # if time_to_dist == 0:
+    #     return 0
+
+    # heuristic = time_to_dist / (
+    #     1
+    #     + math.exp(
+    #         (math.log(time_to_dist) * (range_as_time - (max_threshold_dist / 2)))
+    #         / time_to_dist
+    #     )
+    # )
 
     return heuristic
 
@@ -459,18 +487,18 @@ def ucs(initial_state, successor, goal_test):
                     frontier.update(next_node, next_cost)
 
 
-# Weighted A* Search
 def a_star(initial_state, successor, goal_test, heuristic):
     initial_node = Node(initial_state, [], 0)
-    frontier = [(initial_node, heuristic(initial_state))]
-    explored = []
+    frontier = PriorityQueue()
+    frontier.push(initial_node, 0)
+    explored = set()
 
-    while frontier:
-        curr_node, _ = heapq.heappop(frontier)
+    while not frontier.isEmpty():
+        curr_node = frontier.pop()
         print(
             f"Exploring node: {curr_node.state} with cost: {curr_node.cost} and heuristic: {heuristic(curr_node.state)}"
         )
-        explored.append(curr_node.state)
+        explored.add(curr_node.state)
 
         if goal_test(curr_node.state):
             print("Goal!")
@@ -482,18 +510,49 @@ def a_star(initial_state, successor, goal_test, heuristic):
         for action, next_state, step_cost in successor(curr_node.state):
             next_cost = curr_node.cost + step_cost
             next_node = Node(next_state, curr_node.path + [action], next_cost)
-            next_priority = next_cost + heuristic(next_state)  # * W
+            next_priority = next_cost + heuristic(next_state)
 
-            if next_state not in explored and all(
-                next_state != node.state for node, _ in frontier
-            ):
-                heapq.heappush(frontier, (next_node, next_priority))
-            else:
-                for i, (node, priority) in enumerate(frontier):
-                    if node.state == next_state and priority > next_priority:
-                        frontier[i] = (next_node, next_priority)
-                        heapq.heapify(frontier)
-                        break
+            if next_state not in explored:
+                if next_state in frontier.entry_finder:
+                    return
+                frontier.update(next_node, next_priority)
+
+
+# Weighted A* Search
+# def a_star(initial_state, successor, goal_test, heuristic):
+#     initial_node = Node(initial_state, [], 0)
+#     frontier = [(initial_node, heuristic(initial_state))]
+#     explored = []
+
+#     while frontier:
+#         curr_node, _ = heapq.heappop(frontier)
+#         print(
+#             f"Exploring node: {curr_node.state} with cost: {curr_node.cost} and heuristic: {heuristic(curr_node.state)}"
+#         )
+#         explored.append(curr_node.state)
+
+#         if goal_test(curr_node.state):
+#             print("Goal!")
+#             print(f"Current state: {curr_node.state}")
+#             print(f"Current path:\n")
+#             pprint(curr_node.path)
+#             return curr_node.path
+
+#         for action, next_state, step_cost in successor(curr_node.state):
+#             next_cost = curr_node.cost + step_cost
+#             next_node = Node(next_state, curr_node.path + [action], next_cost)
+#             next_priority = next_cost + heuristic(next_state)  # * W
+
+#             if next_state not in explored and all(
+#                 next_state != node.state for node, _ in frontier
+#             ):
+#                 heapq.heappush(frontier, (next_node, next_priority))
+#             else:
+#                 for i, (node, priority) in enumerate(frontier):
+#                     if node.state == next_state and priority > next_priority:
+#                         frontier[i] = (next_node, next_priority)
+#                         heapq.heapify(frontier)
+#                         break
 
 
 def plot_path(path, start_str, dest_str):
@@ -580,7 +639,7 @@ def main():
         max_range=300,
         initial_range=300,
         time_to_charge=25,
-        station_dist=20,
+        station_dist=5,
         goal_dist=0.2,
         algorithm="a_star",
     )
@@ -710,7 +769,19 @@ def main():
     Constants.AVERAGE_SPEED = distance / duration
 
     if args.algorithm == "a_star":
-        final_path = a_star(initial_state, successor, goal_test, heuristic)
+        cProfile.runctx(
+            "a_star(initial_state, successor, goal_test, heuristic)",
+            globals=dict(
+                a_star=a_star,
+                initial_state=initial_state,
+                successor=successor,
+                goal_test=goal_test,
+                heuristic=heuristic,
+            ),
+            locals={},
+        )
+        return
+        # final_path = a_star(initial_state, successor, goal_test, heuristic)
     elif args.algorithm == "ucs":
         final_path = ucs(initial_state, successor, goal_test)
     elif args.algorithm == "bfs":
@@ -718,7 +789,7 @@ def main():
     elif args.algorithm == "dfs":
         final_path = dfs(initial_state, successor, goal_test)
     elif args.algorithm == "show_nodes":
-        plot_all_nodes(start_str, dest_str)
+        plot_all_nodes(start_str, f"{dest_str}_all-nodes")
         return
     else:
         print(f"Must use valid algorithm.")
@@ -733,3 +804,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+    # cProfile.run("main()")

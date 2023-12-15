@@ -35,10 +35,13 @@ class Queue:
 class PriorityQueue:
     def __init__(self):
         self.heap = []
+        # {item: entry}
+        self.entry_finder = {}
         self.count = 0
 
     def push(self, item, priority):
         entry = (priority, self.count, item)
+        self.entry_finder[item] = entry
         heapq.heappush(self.heap, entry)
         self.count += 1
 
