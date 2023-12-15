@@ -205,10 +205,14 @@ def generate_route_graph():
         G.add_edge(f"waypoint_{i}", f"waypoint_{i + 1}")
 
     waypoint_nodes = [node for node in G.nodes if node.startswith("waypoint")]
-    station_nodes = [node for node in G.nodes if node.startswith("station")]
+    station_nodes = sorted(
+        [node for node in G.nodes if node.startswith("station")],
+        key=lambda node: get_distance(G.nodes[node]["pos"], Constants.DESTINATION),
+    )
 
     # Connect each station node to adjacent waypoints and future stations
-    for station_node in station_nodes:
+    for i in range(len(station_nodes) - 1):
+        station_node = station_nodes[i]
         station_pos = G.nodes[station_node]["pos"]
 
         waypoints_ahead = []
@@ -237,7 +241,9 @@ def generate_route_graph():
             )[0]
             G.add_edge(station_node, nearest_waypoint_ahead)
 
-        for next_station_node in station_nodes:
+        next_station_nodes = station_nodes[i:]
+
+        for next_station_node in next_station_nodes:
             next_station_pos = G.nodes[next_station_node]["pos"]
             if (
                 get_distance(next_station_pos, Constants.DESTINATION)
