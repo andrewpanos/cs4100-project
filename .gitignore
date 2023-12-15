@@ -1,5 +1,6 @@
 google_api_key.txt
 nrel_api_key.txt
+.DS_Store
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
