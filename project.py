@@ -5,7 +5,7 @@ import googlemaps
 import requests
 import math
 from pprint import pprint
-from util import PriorityQueue, Stack
+from util import PriorityQueue, Stack, Queue
 from geopy.distance import geodesic
 import networkx as nx
 import folium
@@ -34,6 +34,7 @@ class Constants:
     MIN_THRESHOLD = 0.1 * MAX_RANGE  # mi, 10% of max range
     MAX_THRESHOLD = 0.8 * MAX_RANGE  # mi, 80% of max range
     TIME_TO_CHARGE = 25  # min, from 10% to 80%
+    CHARGE_RATE = 0  # mi / min
     DIST_FROM_STATION = 10  # mi
     DIST_FROM_GOAL = 0.2  # mi
     AVERAGE_SPEED = 0  # mph
@@ -74,7 +75,7 @@ def get_distance(start, end):
     return geodesic(start, end).miles
 
 
-# Get the duration in minutes to travel between two locations
+# Get the estimated duration (in minutes) to travel between two locations
 def get_duration(start, end):
     return get_distance(start, end) / Constants.AVERAGE_SPEED * 60
 
@@ -241,7 +242,9 @@ def generate_route_graph():
             if (
                 get_distance(next_station_pos, Constants.DESTINATION)
                 < get_distance(station_pos, Constants.DESTINATION)
-            ) and get_distance(station_pos, next_station_pos) < Constants.MAX_THRESHOLD:
+            ) and get_distance(
+                station_pos, next_station_pos
+            ) < Constants.MAX_THRESHOLD - Constants.MIN_THRESHOLD:
                 G.add_edge(station_node, next_station_node)
 
     return G
@@ -268,19 +271,44 @@ def successor(state):
         if node.startswith("waypoint"):
             waypoint = Constants.ROUTE_GRAPH.nodes[node]["pos"]
             distance_to_waypoint = get_distance(current_location, waypoint)
+
+            time_to_waypoint = distance_to_waypoint / Constants.AVERAGE_SPEED * 60
+
             new_range = current_range - distance_to_waypoint
             next_state = (waypoint, new_range)
-            next_action = ("Waypoint", distance_to_waypoint, waypoint)
-            successors.append((next_action, next_state, distance_to_waypoint))
+
+            next_action = ("Waypoint", time_to_waypoint, waypoint)
+            successors.append((next_action, next_state, time_to_waypoint))
+
+            # next_action = ("Waypoint", distance_to_waypoint, waypoint)
+            # successors.append((next_action, next_state, distance_to_waypoint))
 
         # Nearby stations
         elif node.startswith("station"):
             station = Constants.ROUTE_GRAPH.nodes[node]["pos"]
             distance_to_station = get_distance(current_location, station)
-            new_range = Constants.MAX_THRESHOLD
+            new_range = current_range - distance_to_station
+
+            time_to_station = distance_to_station / Constants.AVERAGE_SPEED * 60
+
+            if new_range >= Constants.MAX_THRESHOLD:
+                charge_time = 0
+                new_range = current_range
+            else:
+                charge_time = (
+                    Constants.MAX_THRESHOLD - new_range
+                ) / Constants.CHARGE_RATE
+                new_range = Constants.MAX_THRESHOLD
+
+            total_time = charge_time + time_to_station
+
             next_state = (station, new_range)
-            next_action = ("Station", distance_to_station, station)
-            successors.append((next_action, next_state, distance_to_station))
+
+            next_action = ("Station", charge_time, station)
+            successors.append((next_action, next_state, total_time))
+
+            # next_action = ("Station", distance_to_station, station)
+            # successors.append((next_action, next_state, distance_to_station))
 
     return successors
 
@@ -295,16 +323,26 @@ def goal_test(state):
     )
 
 
-# Path-finding dies at MAX_RANGE of ~330... why?
 def heuristic(state):
     current_location, current_range = state
 
-    dist = get_distance(current_location, Constants.DESTINATION)
+    # dist = get_distance(current_location, Constants.DESTINATION)
+    # if dist == 0:
+    #     return 0
+    # heuristic = dist / (1 + math.exp((math.log(dist) * (current_range - dist)) / dist))
 
-    if dist == 0:
+    time_to_dist = get_duration(current_location, Constants.DESTINATION)
+    range_as_time = current_range / Constants.AVERAGE_SPEED * 60
+
+    if time_to_dist == 0:
         return 0
 
-    heuristic = dist / (1 + math.exp((math.log(dist) * (current_range - dist)) / dist))
+    heuristic = time_to_dist / (
+        1
+        + math.exp(
+            (math.log(time_to_dist) * (range_as_time - time_to_dist)) / time_to_dist
+        )
+    )
 
     return heuristic
 
@@ -435,6 +473,7 @@ def a_star(initial_state, successor, goal_test, heuristic):
             return curr_node.path
 
         for action, next_state, step_cost in successor(curr_node.state):
+            # print(f"Successor state: {next_state} with cost: {step_cost}")
             next_cost = curr_node.cost + step_cost
             next_node = Node(next_state, curr_node.path + [action], next_cost)
             next_priority = next_cost + heuristic(next_state)  # * W
@@ -474,14 +513,14 @@ def plot_path(path, start_str, dest_str):
             folium.Marker(
                 location=action[2],
                 popup=action[2],
-                tooltip=f"Step {i + 1}: Waypoint",
+                tooltip=f"Step {i + 1}: Waypoint\nDrive for {round(action[1])} minutes",
                 icon=folium.Icon(color="black"),
             ).add_to(route_map)
         elif action[0] == "Station":
             folium.Marker(
                 location=action[2],
                 popup=action[2],
-                tooltip=f"Step {i + 1}: Station",
+                tooltip=f"Step {i + 1}: Station\nCharge for {round(action[1])} minutes",
                 icon=folium.Icon(color="red"),
             ).add_to(route_map)
 
@@ -525,11 +564,12 @@ def plot_google_maps_route(path):
 
 def main():
     DEFAULT = dict(
-        max_range=400,
-        initial_range=400,
+        max_range=300,
+        initial_range=300,
         time_to_charge=25,
         station_dist=20,
         goal_dist=0.2,
+        algorithm="a_star",
     )
 
     parser = argparse.ArgumentParser(
@@ -548,6 +588,14 @@ def main():
         "--dest",
         help="Destination location for this route.",
         required=True,
+    )
+    parser.add_argument(
+        "-a",
+        "--algorithm",
+        help="Algorithm to be used to find a route.",
+        required=False,
+        default=DEFAULT["algorithm"],
+        choices=["a_star", "ucs", "bfs", "dfs"],
     )
     parser.add_argument(
         "--max-range",
@@ -595,6 +643,11 @@ def main():
     Constants.DIST_FROM_STATION = args.station_dist
     Constants.DIST_FROM_GOAL = args.goal_dist
 
+    # Initialize CHARGE_RATE from TIME_TO_CHARGE
+    Constants.CHARGE_RATE = (
+        Constants.MAX_THRESHOLD - Constants.MIN_THRESHOLD
+    ) / Constants.TIME_TO_CHARGE
+
     # Initialize START (lat, lng) pair by geocoding
     start_str = args.start
     start_geocode_result = gmaps.geocode(start_str)[0]["geometry"]["location"]
@@ -611,6 +664,7 @@ def main():
         dest_geocode_result["lng"],
     )
 
+    # Initialize initial_range and initial_state
     initial_range = (
         args.initial_range
         if args.initial_range <= Constants.MAX_RANGE
@@ -619,19 +673,40 @@ def main():
 
     initial_state = (Constants.START, initial_range)
 
+    # Initialize WAYPOINTS list, including start and destination locations
     Constants.WAYPOINTS = get_waypoints_along_route(
         Constants.START, Constants.DESTINATION
     )
     Constants.WAYPOINTS.insert(0, Constants.START)
     Constants.WAYPOINTS.append(Constants.DESTINATION)
 
+    # Initialize STATIONS list
     Constants.STATIONS = get_stations_along_route(
         Constants.START, Constants.DESTINATION
     )
 
+    # Initialize ROUTE_GRAPH
     Constants.ROUTE_GRAPH = generate_route_graph()
 
-    final_path = a_star(initial_state, successor, goal_test, heuristic)
+    # Initialize AVERAGE_SPEED
+    directions_result = gmaps.directions(
+        Constants.START, Constants.DESTINATION, mode="driving"
+    )
+    duration = directions_result[0]["legs"][0]["duration"]["value"] / 3600  # hours
+    distance = directions_result[0]["legs"][0]["distance"]["value"] / 1609  # miles
+    Constants.AVERAGE_SPEED = distance / duration
+
+    if args.algorithm == "a_star":
+        final_path = a_star(initial_state, successor, goal_test, heuristic)
+    elif args.algorithm == "ucs":
+        final_path = ucs(initial_state, successor, goal_test)
+    elif args.algorithm == "bfs":
+        final_path = bfs(initial_state, successor, goal_test)
+    elif args.algorithm == "dfs":
+        final_path = dfs(initial_state, successor, goal_test)
+    else:
+        print(f"Must use valid algorithm.")
+        return
 
     if final_path:
         plot_path(final_path, start_str, dest_str)
