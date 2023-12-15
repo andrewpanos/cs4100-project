@@ -180,10 +180,7 @@ def get_stations_along_route(start, end):
     # Check if 'fuel_stations' key exists in the response
     if "fuel_stations" in data and data["fuel_stations"]:
         stations = [
-            (
-                station["latitude"],
-                station["longitude"],
-            )
+            (station["latitude"], station["longitude"])
             for station in data["fuel_stations"]
         ]
         return stations
@@ -205,14 +202,10 @@ def generate_route_graph():
         G.add_edge(f"waypoint_{i}", f"waypoint_{i + 1}")
 
     waypoint_nodes = [node for node in G.nodes if node.startswith("waypoint")]
-    station_nodes = sorted(
-        [node for node in G.nodes if node.startswith("station")],
-        key=lambda node: get_distance(G.nodes[node]["pos"], Constants.DESTINATION),
-    )
+    station_nodes = [node for node in G.nodes if node.startswith("station")]
 
     # Connect each station node to adjacent waypoints and future stations
-    for i in range(len(station_nodes) - 1):
-        station_node = station_nodes[i]
+    for station_node in station_nodes:
         station_pos = G.nodes[station_node]["pos"]
 
         waypoints_ahead = []
@@ -241,9 +234,7 @@ def generate_route_graph():
             )[0]
             G.add_edge(station_node, nearest_waypoint_ahead)
 
-        next_station_nodes = station_nodes[i:]
-
-        for next_station_node in next_station_nodes:
+        for next_station_node in station_nodes:
             next_station_pos = G.nodes[next_station_node]["pos"]
             if (
                 get_distance(next_station_pos, Constants.DESTINATION)
@@ -254,6 +245,75 @@ def generate_route_graph():
                 G.add_edge(station_node, next_station_node)
 
     return G
+
+
+# def generate_route_graph():
+#     G = nx.DiGraph()
+
+#     for i, waypoint in enumerate(Constants.WAYPOINTS):
+#         G.add_node(f"waypoint_{i}", pos=waypoint)
+
+#     for i, station in enumerate(Constants.STATIONS):
+#         G.add_node(f"station_{i}", pos=station)
+
+#     for i in range(len(Constants.WAYPOINTS) - 1):
+#         G.add_edge(f"waypoint_{i}", f"waypoint_{i + 1}")
+
+#     waypoint_nodes = [node for node in G.nodes if node.startswith("waypoint")]
+#     station_nodes = sorted(
+#         [node for node in G.nodes if node.startswith("station")],
+#         key=lambda node: get_distance(G.nodes[node]["pos"], Constants.DESTINATION),
+#         reverse=True,
+#     )
+
+#     # pprint(dict(G.nodes.data("pos")))
+#     # pprint(station_nodes)
+#     # return
+
+#     # Connect each station node to adjacent waypoints and future stations
+#     for i in range(len(station_nodes) - 1):
+#         station_node = station_nodes[i]
+#         station_pos = G.nodes[station_node]["pos"]
+
+#         waypoints_ahead = []
+#         waypoints_behind = []
+
+#         for waypoint_node in waypoint_nodes:
+#             waypoint_pos = G.nodes[waypoint_node]["pos"]
+#             waypoint_start_dist = get_distance(waypoint_pos, Constants.START)
+#             station_start_dist = get_distance(station_pos, Constants.START)
+#             if waypoint_start_dist > station_start_dist:
+#                 waypoints_ahead.append((waypoint_node, waypoint_pos))
+#             elif waypoint_start_dist < station_start_dist:
+#                 waypoints_behind.append((waypoint_node, waypoint_pos))
+
+#         if waypoints_behind:
+#             nearest_waypoint_behind = min(
+#                 waypoints_behind,
+#                 key=lambda waypoint: get_distance(station_pos, waypoint[1]),
+#             )[0]
+#             G.add_edge(nearest_waypoint_behind, station_node)
+
+#         if waypoints_ahead:
+#             nearest_waypoint_ahead = min(
+#                 waypoints_ahead,
+#                 key=lambda waypoint: get_distance(station_pos, waypoint[1]),
+#             )[0]
+#             G.add_edge(station_node, nearest_waypoint_ahead)
+
+#         next_station_nodes = station_nodes[i:]
+
+#         for next_station_node in next_station_nodes:
+#             next_station_pos = G.nodes[next_station_node]["pos"]
+#             if (
+#                 get_distance(next_station_pos, Constants.DESTINATION)
+#                 < get_distance(station_pos, Constants.DESTINATION)
+#             ) and get_distance(
+#                 station_pos, next_station_pos
+#             ) < Constants.MAX_THRESHOLD - Constants.MIN_THRESHOLD:
+#                 G.add_edge(station_node, next_station_node)
+
+#     return G
 
 
 # Return a list of successors in the form (action, state, step_cost)
@@ -335,7 +395,11 @@ def heuristic(state):
     # dist = get_distance(current_location, Constants.DESTINATION)
     # if dist == 0:
     #     return 0
-    # heuristic = dist / (1 + math.exp((math.log(dist) * (current_range - dist)) / dist))
+
+    # heuristic = dist / (
+    #     1
+    #     + math.exp((math.log(dist) * (current_range - dist)) / dist)
+    # )
 
     time_to_dist = get_duration(current_location, Constants.DESTINATION)
     range_as_time = current_range / Constants.AVERAGE_SPEED * 60
@@ -464,7 +528,12 @@ def a_star(initial_state, successor, goal_test, heuristic):
     frontier = [(initial_node, heuristic(initial_state))]
     explored = []
 
+    # j = 20
+
     while frontier:
+        # if j == 0:
+        #     return
+
         curr_node, _ = heapq.heappop(frontier)
         print(
             f"Exploring node: {curr_node.state} with cost: {curr_node.cost} and heuristic: {heuristic(curr_node.state)}"
@@ -479,7 +548,9 @@ def a_star(initial_state, successor, goal_test, heuristic):
             return curr_node.path
 
         for action, next_state, step_cost in successor(curr_node.state):
-            # print(f"Successor state: {next_state} with cost: {step_cost}")
+            # print(
+            #     f"Successor: {action[0]} at {next_state} | Cost: {step_cost} | Heuristic: {heuristic(next_state)}"
+            # )
             next_cost = curr_node.cost + step_cost
             next_node = Node(next_state, curr_node.path + [action], next_cost)
             next_priority = next_cost + heuristic(next_state)  # * W
@@ -494,6 +565,9 @@ def a_star(initial_state, successor, goal_test, heuristic):
                         frontier[i] = (next_node, next_priority)
                         heapq.heapify(frontier)
                         break
+
+        # print("\n")
+        # j = j - 1
 
 
 def plot_path(path, start_str, dest_str):
@@ -568,12 +642,19 @@ def plot_google_maps_route(path):
     webbrowser.open(browser_url)
 
 
+def plot_all_nodes(start_str, dest_str):
+    path = [("Waypoint", 0, waypoint) for waypoint in Constants.WAYPOINTS] + [
+        ("Station", 0, station) for station in Constants.STATIONS
+    ]
+    plot_path(path, start_str, dest_str)
+
+
 def main():
     DEFAULT = dict(
         max_range=300,
         initial_range=300,
         time_to_charge=25,
-        station_dist=20,
+        station_dist=5,
         goal_dist=0.2,
         algorithm="a_star",
     )
@@ -601,7 +682,7 @@ def main():
         help="Algorithm to be used to find a route.",
         required=False,
         default=DEFAULT["algorithm"],
-        choices=["a_star", "ucs", "bfs", "dfs"],
+        choices=["a_star", "ucs", "bfs", "dfs", "show_nodes"],
     )
     parser.add_argument(
         "--max-range",
@@ -710,6 +791,9 @@ def main():
         final_path = bfs(initial_state, successor, goal_test)
     elif args.algorithm == "dfs":
         final_path = dfs(initial_state, successor, goal_test)
+    elif args.algorithm == "show_nodes":
+        plot_all_nodes(start_str, dest_str)
+        return
     else:
         print(f"Must use valid algorithm.")
         return
