@@ -94,8 +94,6 @@ def dist_from_start(location):
 
 
 def dist_from_dest(location):
-    return get_distance(Constants.DESTINATION, location)
-
     dest_dist = DEST_DIST_CACHE.get(location)
 
     # If this location is not in the cache, calculate it and add it
@@ -239,7 +237,8 @@ def generate_route_graph():
     waypoint_nodes = [node for node in G.nodes if node.startswith("waypoint")]
     station_nodes = sorted(
         [node for node in G.nodes if node.startswith("station")],
-        key=lambda node: dist_from_start(G.nodes[node]["pos"]),
+        key=lambda node: dist_from_dest(G.nodes[node]["pos"]),
+        reverse=True,
     )
 
     # Connect each station node to adjacent waypoints and future stations
@@ -513,9 +512,22 @@ def a_star(initial_state, successor, goal_test, heuristic):
             next_priority = next_cost + heuristic(next_state)
 
             if next_state not in explored:
-                if next_state in frontier.entry_finder:
-                    return
-                frontier.update(next_node, next_priority)
+                state_indices = {
+                    node.state: i for i, (_, _, node) in enumerate(frontier.heap)
+                }
+
+                if next_state not in state_indices:
+                    frontier.push(next_node, next_priority)
+                else:
+                    existing_index = state_indices[next_state]
+                    existing_priority = frontier.heap[existing_index][2].cost
+
+                    if next_priority < existing_priority:
+                        frontier.update(next_node, next_priority)
+
+                # if next_state in frontier.entry_finder:
+                #     return
+                # frontier.update(next_node, next_priority)
 
 
 # Weighted A* Search
