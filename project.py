@@ -321,8 +321,6 @@ def bfs(initial_state, successor, goal_test):
         curr_state = curr_node.state
         explored.add(curr_state)
 
-        print(curr_state)
-
         if goal_test(curr_state):
             print("Goal!")
             print(f"Current state: {curr_node.state}")
